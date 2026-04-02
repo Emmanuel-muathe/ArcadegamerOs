@@ -1,4 +1,4 @@
-name: Build Arcadegamer254Os Multi-Arch ISOs
+name: Build Arcadegamer254Os ISO
 
 on:
   workflow_dispatch: 
@@ -8,25 +8,12 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: "x86_64"
-            image: "lopsided/archlinux:latest"
-          - arch: "aarch64"
-            image: "lopsided/archlinux:latest"
-          - arch: "i686"
-            image: "lopsided/archlinux:latest"
     permissions:
       contents: write
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Build React App
         run: |
@@ -39,13 +26,10 @@ jobs:
           #!/bin/bash
           set -e
           
-          ARCH=$(uname -m)
-          echo "Building for Architecture: $ARCH"
+          echo "Building Arcadegamer254Os for Architecture: x86_64"
 
-          # 1. Host Tools (Fixed: Single-line string with single quotes for proper pacman variables)
+          # 1. Host Tools & Keyring
           echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
-          
-          # Update keyring first to prevent signature errors, then install tools
           pacman -Sy --noconfirm archlinux-keyring
           pacman -Syu --noconfirm archiso xorriso squashfs-tools grub mtools libisoburn mkinitcpio wget
 
@@ -53,24 +37,18 @@ jobs:
           cp -r /usr/share/archiso/configs/baseline/ ./iso_profile
           cd iso_profile
 
-          # 3. Configure profiledef.sh
+          # 3. Configure profiledef.sh for compression
           sed -i 's/compression="xz"/compression="xz" -Xbcj x86/g' profiledef.sh 
-          sed -i "s/x86_64/${ARCH}/g" profiledef.sh
-          if [ "$ARCH" == "aarch64" ]; then
-            sed -i "s/'bios.syslinux' //g" profiledef.sh
-            sed -i 's/-Xbcj x86/-Xbcj arm/g' profiledef.sh
-          fi
 
           # 4. Define "Full Experience" Packages
-          PKGS_FILE="packages.${ARCH}"
-          cat << PKGS > "$PKGS_FILE"
-          base             # Includes pacman
-          base-devel       # Required for sudo and compilation
+          cat << PKGS > packages.x86_64
+          base
+          base-devel
           linux
           linux-firmware
           grub
           efibootmgr
-          sudo             # Explicitly requested
+          sudo
           git
           vim
           htop
@@ -87,7 +65,7 @@ jobs:
           chromium
           alsa-utils
           plymouth
-          $( [[ "$ARCH" != "aarch64" ]] && echo "syslinux" )
+          syslinux
           PKGS
 
           # 5. Inject OS Code
@@ -99,16 +77,13 @@ jobs:
           mkdir -p airootfs/usr/local/bin
           wget https://raw.githubusercontent.com/icy/pacapt/master/pacapt -O airootfs/usr/local/bin/pacapt
           chmod +x airootfs/usr/local/bin/pacapt
-          # Create symlinks so 'apt' and 'pkg' work natively
           ln -sf /usr/local/bin/pacapt airootfs/usr/local/bin/apt
           ln -sf /usr/local/bin/pacapt airootfs/usr/local/bin/pkg
 
           # 7. System Configurations
-          # Setup Sudo (Passwordless for root/live user)
           mkdir -p airootfs/etc/sudoers.d
           echo "root ALL=(ALL) NOPASSWD: ALL" > airootfs/etc/sudoers.d/10-live-user
 
-          # Setup X11 Startup
           cat << 'XINIT' > airootfs/root/.xinitrc
           amixer sset Master unmute &
           nm-applet &
@@ -116,15 +91,16 @@ jobs:
           exec chromium --kiosk --no-sandbox --autoplay-policy=no-user-gesture-required http://localhost:3000
           XINIT
 
-          # Services & Autologin
           mkdir -p airootfs/etc/systemd/system/multi-user.target.wants
           ln -sf /usr/lib/systemd/system/NetworkManager.service airootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service
+          
           mkdir -p airootfs/etc/systemd/system/getty@tty1.service.d/
           cat << 'LOGIN' > airootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf
           [Service]
           ExecStart=
           ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
           LOGIN
+          
           echo '[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx' >> airootfs/root/.bash_profile
 
           # 8. Build ISO
@@ -132,13 +108,13 @@ jobs:
           EOF
           chmod +x build_iso.sh
 
-      - name: Generate ISO (${{ matrix.arch }})
+      - name: Generate OS ISO
         run: |
-          docker run --privileged --rm -v $(pwd):/workspace -w /workspace ${{ matrix.image }} ./build_iso.sh
+          docker run --privileged --rm -v $(pwd):/workspace -w /workspace archlinux:latest ./build_iso.sh
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Arcadegamer254Os-${{ matrix.arch }}-full
+          name: Arcadegamer254Os-x86_64
           path: output/*.iso
           
