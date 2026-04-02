@@ -3,45 +3,50 @@ import { motion } from 'motion/react';
 import { useWindowManager, WindowState } from '../contexts/WindowManagerContext';
 import { X, Square } from 'lucide-react';
 
-export function Window({ window, children }: { window: WindowState, children: React.ReactNode }) {
+type WindowProps = {
+  win: WindowState;
+  children: React.ReactNode;
+};
+
+export const Window: React.FC<WindowProps> = ({ win, children }) => {
   const { closeWindow, focusWindow, updateWindow } = useWindowManager();
 
   return (
     <motion.div
-      drag={!window.maximized}
+      drag={!win.maximized}
       dragMomentum={false}
       dragHandle=".window-handle"
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ 
         opacity: 1, 
         scale: 1,
-        x: window.maximized ? 0 : window.x,
-        y: window.maximized ? 0 : window.y,
-        width: window.maximized ? '100vw' : window.width,
-        height: window.maximized ? 'calc(100vh - 3rem)' : window.height,
+        x: win.maximized ? 0 : win.x,
+        y: win.maximized ? 0 : win.y,
+        width: win.maximized ? '100vw' : win.width,
+        height: win.maximized ? 'calc(100vh - 3rem)' : win.height,
       }}
       onDragEnd={(e, info) => {
-        if (!window.maximized) {
-          updateWindow(window.id, { x: window.x + info.offset.x, y: window.y + info.offset.y });
+        if (!win.maximized) {
+          updateWindow(win.id, { x: win.x + info.offset.x, y: win.y + info.offset.y });
         }
       }}
-      onPointerDown={() => focusWindow(window.id)}
-      style={{ zIndex: window.zIndex }}
+      onPointerDown={() => focusWindow(win.id)}
+      style={{ zIndex: win.zIndex }}
       className="absolute bg-gray-900 border border-gray-700 rounded-lg shadow-2xl overflow-hidden flex flex-col pointer-events-auto"
     >
       <div className="window-handle h-10 bg-gray-800 flex items-center justify-between px-4 cursor-grab active:cursor-grabbing select-none border-b border-gray-700">
-        <span className="text-sm font-semibold text-gray-200">{window.title}</span>
+        <span className="text-sm font-semibold text-gray-200">{win.title}</span>
         <div className="flex items-center space-x-3">
           <button 
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => updateWindow(window.id, { maximized: !window.maximized })} 
+            onClick={() => updateWindow(win.id, { maximized: !win.maximized })} 
             className="text-gray-400 hover:text-white transition-colors"
           >
             <Square className="w-4 h-4" />
           </button>
           <button 
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => closeWindow(window.id)} 
+            onClick={() => closeWindow(win.id)} 
             className="text-gray-400 hover:text-red-500 transition-colors"
           >
             <X className="w-5 h-5" />
@@ -53,4 +58,4 @@ export function Window({ window, children }: { window: WindowState, children: Re
       </div>
     </motion.div>
   );
-}
+};
