@@ -8,6 +8,16 @@ import { promisify } from "util";
 
 const execAsync = promisify(exec);
 
+const PACKAGE_NAME_REGEX = /^[a-zA-Z0-9@._+-]+$/;
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function isSafePackageName(value: string) {
+  return PACKAGE_NAME_REGEX.test(value);
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -32,13 +42,35 @@ async function startServer() {
   // --- WI-FI ---
   app.get("/api/system/wifi", async (req, res) => {
     try {
+      let enabled = true;
+      try {
+        const radio = await execAsync("nmcli radio wifi");
+        enabled = radio.stdout.trim().toLowerCase() === "enabled";
+      } catch (e) {
+        // Keep enabled=true if status command is unavailable
+      }
+
+      if (!enabled) {
+        return res.json({ enabled: false, networks: [] });
+      }
+
       const { stdout } = await execAsync("nmcli -t -f SSID,SIGNAL,SECURITY dev wifi");
       const networks = stdout.split("\n").filter(l => l.trim() !== "").map(line => {
         const [ssid, signal, security] = line.split(":");
         return { ssid, signal: parseInt(signal, 10), security };
       }).filter(n => n.ssid && n.ssid !== "--").reduce((acc, curr) => acc.find((i: any) => i.ssid === curr.ssid) ? acc : [...acc, curr], [] as any[]);
-      res.json({ networks });
+      res.json({ enabled: true, networks });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
+  });
+
+  app.post("/api/system/wifi/toggle", async (req, res) => {
+    try {
+      const enabled = !!req.body?.enabled;
+      await execAsync(`nmcli radio wifi ${enabled ? 'on' : 'off'}`);
+      res.json({ success: true, enabled });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.post("/api/system/wifi/connect", async (req, res) => {
@@ -249,6 +281,12 @@ async function startServer() {
   // --- SETTINGS: BLUETOOTH ---
   app.get("/api/system/bluetooth", async (req, res) => {
     try {
+      const { stdout: showOut } = await execAsync("bluetoothctl show");
+      const enabled = /Powered:\s+yes/i.test(showOut);
+      if (!enabled) {
+        return res.json({ enabled: false, devices: [] });
+      }
+
       const { stdout } = await execAsync("bluetoothctl devices");
       const devices = stdout.trim().split('\n').filter(Boolean).map(line => {
         const parts = line.split(' ');
@@ -257,6 +295,16 @@ async function startServer() {
       res.json({ enabled: true, devices });
     } catch (e: any) {
       res.json({ enabled: false, devices: [], error: "Bluetooth service unavailable or bluetoothctl failed" });
+    }
+  });
+
+  app.post("/api/system/bluetooth/toggle", async (req, res) => {
+    try {
+      const enabled = !!req.body?.enabled;
+      await execAsync(`bluetoothctl power ${enabled ? 'on' : 'off'}`);
+      res.json({ success: true, enabled });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 
@@ -489,6 +537,21 @@ async function startServer() {
   app.post("/api/system/apps/launch", async (req, res) => {
     try {
       const { exec: cmd } = req.body;
+      if (!cmd || typeof cmd !== 'string') {
+        return res.status(400).json({ error: 'Missing app command' });
+      }
+
+      const baseCmd = cmd.trim().split(/\s+/)[0];
+      if (!baseCmd) {
+        return res.status(400).json({ error: 'Invalid app command' });
+      }
+
+      try {
+        await execAsync(`command -v -- ${shellQuote(baseCmd)}`);
+      } catch (e) {
+        return res.status(404).json({ error: `Command not found: ${baseCmd}` });
+      }
+
       const child = require('child_process').spawn(cmd, [], { 
         shell: true, 
         detached: true, 
@@ -496,14 +559,21 @@ async function startServer() {
         env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' }
       });
       child.unref();
-      res.json({ success: true });
+      res.json({ success: true, launched: cmd });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
   });
 
   // --- TERMINAL ---
   app.post("/api/system/terminal", async (req, res) => {
     try {
+      if (process.env.NODE_ENV === 'production' && process.env.ALLOW_WEB_TERMINAL !== 'true') {
+        return res.status(403).json({ output: 'Web terminal is disabled in production.' });
+      }
+
       const { command } = req.body;
+      if (!command || typeof command !== 'string') {
+        return res.status(400).json({ output: 'Missing command' });
+      }
       const { stdout, stderr } = await execAsync(command);
       res.json({ output: stdout || stderr });
     } catch (error: any) { 
@@ -564,7 +634,12 @@ async function startServer() {
           return res.json({ packages: [] });
         }
       }
-      const { stdout } = await execAsync(`pacman -Ss ${q}`);
+      const query = String(q).trim();
+      if (!/^[a-zA-Z0-9@._+\-\s]{1,80}$/.test(query)) {
+        return res.status(400).json({ error: 'Invalid search query' });
+      }
+
+      const { stdout } = await execAsync(`pacman -Ss -- ${shellQuote(query)}`);
       const lines = stdout.split('\n');
       const packages = [];
       for (let i = 0; i < lines.length; i += 2) {
@@ -581,7 +656,10 @@ async function startServer() {
   app.post("/api/system/packages/install", async (req, res) => {
     try {
       const { pkg } = req.body;
-      const { stdout } = await execAsync(`pkexec pacman -S --noconfirm ${pkg}`);
+      if (!pkg || typeof pkg !== 'string' || !isSafePackageName(pkg)) {
+        return res.status(400).json({ error: 'Invalid package name' });
+      }
+      const { stdout } = await execAsync(`pkexec pacman -S --noconfirm -- ${shellQuote(pkg)}`);
       res.json({ success: true, output: stdout });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
   });
@@ -589,7 +667,10 @@ async function startServer() {
   app.post("/api/system/packages/uninstall", async (req, res) => {
     try {
       const { pkg } = req.body;
-      const { stdout } = await execAsync(`pkexec pacman -Rns --noconfirm ${pkg}`);
+      if (!pkg || typeof pkg !== 'string' || !isSafePackageName(pkg)) {
+        return res.status(400).json({ error: 'Invalid package name' });
+      }
+      const { stdout } = await execAsync(`pkexec pacman -Rns --noconfirm -- ${shellQuote(pkg)}`);
       res.json({ success: true, output: stdout });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
   });
@@ -602,21 +683,6 @@ async function startServer() {
         return { name, version };
       });
       res.json({ packages });
-    } catch (error: any) { res.status(500).json({ error: error.message }); }
-  });
-
-  // --- BLUETOOTH ---
-  app.get("/api/system/bluetooth", async (req, res) => {
-    try {
-      // Mock bluetooth data since container might not have real bluetooth
-      res.json({
-        enabled: true,
-        devices: [
-          { name: "AirPods Pro", connected: true, battery: 85 },
-          { name: "Logitech MX Master 3", connected: true, battery: 40 },
-          { name: "Keychron K2", connected: false }
-        ]
-      });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
   });
 

@@ -12,15 +12,70 @@ export function QuickSettings({ isOpen, onClose, position }: { isOpen: boolean, 
   
   const [wifiEnabled, setWifiEnabled] = useState(true);
   const [btEnabled, setBtEnabled] = useState(true);
+  const [wifiBusy, setWifiBusy] = useState(false);
+  const [btBusy, setBtBusy] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     
     // Fetch system states when opened
     fetch('/api/system/battery').then(r => r.json()).then(d => !d.error && setBattery(d)).catch(() => {});
-    fetch('/api/system/wifi').then(r => r.json()).then(d => !d.error && setWifiNetworks(d.networks || [])).catch(() => {});
-    fetch('/api/system/bluetooth').then(r => r.json()).then(d => !d.error && setBluetooth(d)).catch(() => {});
+    fetch('/api/system/wifi').then(r => r.json()).then(d => {
+      if (!d.error) {
+        setWifiNetworks(d.networks || []);
+        setWifiEnabled(d.enabled !== false);
+      }
+    }).catch(() => {});
+    fetch('/api/system/bluetooth').then(r => r.json()).then(d => {
+      if (!d.error) {
+        setBluetooth(d);
+        setBtEnabled(!!d.enabled);
+      }
+    }).catch(() => {});
   }, [isOpen]);
+
+  const toggleWifi = async () => {
+    if (wifiBusy) return;
+    const next = !wifiEnabled;
+    setWifiBusy(true);
+    try {
+      const res = await fetch('/api/system/wifi/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next })
+      });
+      const data = await res.json();
+      if (!data.error) {
+        setWifiEnabled(next);
+        if (!next) {
+          setWifiNetworks([]);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to toggle Wi-Fi', e);
+    }
+    setWifiBusy(false);
+  };
+
+  const toggleBluetooth = async () => {
+    if (btBusy) return;
+    const next = !btEnabled;
+    setBtBusy(true);
+    try {
+      const res = await fetch('/api/system/bluetooth/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next })
+      });
+      const data = await res.json();
+      if (!data.error) {
+        setBtEnabled(next);
+      }
+    } catch (e) {
+      console.error('Failed to toggle Bluetooth', e);
+    }
+    setBtBusy(false);
+  };
 
   if (!isOpen) return null;
 
@@ -77,27 +132,33 @@ export function QuickSettings({ isOpen, onClose, position }: { isOpen: boolean, 
         
         {/* Quick Toggles */}
         <div className="grid grid-cols-2 gap-3 mb-4">
-          <div 
-            className={`p-4 rounded-2xl flex flex-col cursor-pointer transition-colors ${wifiEnabled ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-800 hover:bg-gray-700'}`}
-            onClick={() => setWifiEnabled(!wifiEnabled)}
+          <button
+            type="button"
+            aria-pressed={wifiEnabled}
+            disabled={wifiBusy}
+            className={`p-4 rounded-2xl flex flex-col cursor-pointer transition-colors text-left ${wifiEnabled ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-800 hover:bg-gray-700'} ${wifiBusy ? 'opacity-70 cursor-not-allowed' : ''}`}
+            onClick={toggleWifi}
           >
             <div className="flex justify-between items-start mb-2">
               {wifiEnabled ? <Wifi className="w-5 h-5" /> : <WifiOff className="w-5 h-5 text-gray-400" />}
             </div>
             <span className="font-medium text-sm">Wi-Fi</span>
-            <span className="text-xs text-blue-200 truncate">{wifiEnabled ? (wifiNetworks[0]?.ssid || 'Connected') : 'Off'}</span>
-          </div>
+            <span className="text-xs text-blue-200 truncate">{wifiBusy ? 'Updating...' : wifiEnabled ? (wifiNetworks[0]?.ssid || 'On') : 'Off'}</span>
+          </button>
 
-          <div 
-            className={`p-4 rounded-2xl flex flex-col cursor-pointer transition-colors ${btEnabled ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-800 hover:bg-gray-700'}`}
-            onClick={() => setBtEnabled(!btEnabled)}
+          <button
+            type="button"
+            aria-pressed={btEnabled}
+            disabled={btBusy}
+            className={`p-4 rounded-2xl flex flex-col cursor-pointer transition-colors text-left ${btEnabled ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-800 hover:bg-gray-700'} ${btBusy ? 'opacity-70 cursor-not-allowed' : ''}`}
+            onClick={toggleBluetooth}
           >
             <div className="flex justify-between items-start mb-2">
               {btEnabled ? <Bluetooth className="w-5 h-5" /> : <BluetoothOff className="w-5 h-5 text-gray-400" />}
             </div>
             <span className="font-medium text-sm">Bluetooth</span>
-            <span className="text-xs text-blue-200 truncate">{btEnabled ? (bluetooth?.devices?.find((d:any) => d.connected)?.name || 'On') : 'Off'}</span>
-          </div>
+            <span className="text-xs text-blue-200 truncate">{btBusy ? 'Updating...' : btEnabled ? (bluetooth?.devices?.find((d:any) => d.connected)?.name || 'On') : 'Off'}</span>
+          </button>
         </div>
 
         {/* Sliders (Mocked for now) */}
