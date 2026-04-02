@@ -11,9 +11,9 @@ jobs:
       matrix:
         include:
           - arch: "x86_64"
-            platform: "linux/amd64"
+            image: "lopsided/archlinux:latest"
           - arch: "aarch64"
-            platform: "linux/arm64"
+            image: "lopsided/archlinux:latest"
     permissions:
       contents: write
 
@@ -29,77 +29,77 @@ jobs:
           npm install
           npm run build
 
+      - name: Create Build Script
+        run: |
+          cat << 'EOF' > build_iso.sh
+          #!/bin/bash
+          set -e
+          # 1. Install minimal build toolset
+          pacman -Syu --noconfirm archiso xorriso squashfs-tools nodejs npm
+
+          # 2. Setup Baseline Profile (Smallest footprint)
+          cp -r /usr/share/archiso/configs/baseline/ ./iso_profile
+          cd iso_profile
+
+          # 3. Define packages (Surgical precision)
+          # We use the 'packages.x86_64' name as required by archiso
+          cat << 'PKGS' > packages.x86_64
+          linux
+          grub
+          nodejs
+          npm
+          xorg-server
+          xorg-xinit
+          xf86-video-fbdev
+          xf86-video-vesa
+          openbox
+          chromium
+          plymouth
+          breeze-plymouth
+          PKGS
+
+          # 4. Configure Plymouth Splash
+          sed -i 's/HOOKS=(base udev/HOOKS=(base udev plymouth/' airootfs/etc/mkinitcpio.conf
+          mkdir -p airootfs/etc/plymouth/
+          echo -e '[Daemon]\nTheme=breeze' > airootfs/etc/plymouth/plymouthd.conf
+
+          # 5. Inject OS Code
+          mkdir -p airootfs/root/os
+          cp -r /workspace/dist /workspace/server.ts /workspace/package.json airootfs/root/os/
+          
+          # Create Xinit config
+          cat << 'XINIT' > airootfs/root/.xinitrc
+          cd /root/os && node server.js &
+          sleep 2
+          exec chromium --kiosk --no-sandbox --autoplay-policy=no-user-gesture-required http://localhost:3000
+          XINIT
+
+          # 6. Auto-login & UI Start
+          mkdir -p airootfs/etc/systemd/system/getty@tty1.service.d/
+          cat << 'LOGIN' > airootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf
+          [Service]
+          ExecStart=
+          ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+          LOGIN
+
+          echo '[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx' >> airootfs/root/.bash_profile
+
+          # 7. Quiet Boot parameters
+          mkdir -p airootfs/etc/default/
+          echo 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 rd.udev.log_priority=3 vt.global_cursor_default=0"' > airootfs/etc/default/grub
+
+          # 8. Shrink the ISO (Cleanup)
+          pacman -Scc --noconfirm
+          rm -rf /var/cache/pacman/pkg/*
+
+          # 9. Build
+          mkarchiso -v -w /tmp/archiso-tmp -o /workspace/output .
+          EOF
+          chmod +x build_iso.sh
+
       - name: Generate Minimal ISO (${{ matrix.arch }})
         run: |
-          docker run --privileged --platform ${{ matrix.platform }} --rm -v $(pwd):/workspace -w /workspace archlinux:latest bash -c "
-            # 1. Install minimal build toolset
-            pacman -Syu --noconfirm archiso xorriso squashfs-tools nodejs npm
-
-            # 2. Use the 'baseline' profile for the smallest possible size
-            cp -r /usr/share/archiso/configs/baseline/ ./iso_profile
-            cd iso_profile
-
-            # 3. Define the absolute minimum package list
-            # We add only what is strictly necessary for your UI to exist
-            cat <<EOF > packages.x86_64
-            linux
-            grub
-            nodejs
-            npm
-            xorg-server
-            xorg-xinit
-            xf86-video-fbdev
-            xf86-video-vesa
-            openbox
-            chromium
-            plymouth
-            breeze-plymouth
-            EOF
-
-            # 4. Configure Plymouth (Boot Splash)
-            # This ensures the user sees your logo instead of the kernel logs
-            sed -i 's/HOOKS=(base udev/HOOKS=(base udev plymouth/' airootfs/etc/mkinitcpio.conf
-            mkdir -p airootfs/etc/plymouth/
-            echo -e '[Daemon]\nTheme=breeze' > airootfs/etc/plymouth/plymouthd.conf
-
-            # 5. Setup Script to Launch Arcadegamer254Os
-            mkdir -p airootfs/root/os
-            cp -r /workspace/dist /workspace/server.ts /workspace/package.json airootfs/root/os/
-            
-            cat <<EOF > airootfs/root/.xinitrc
-            # Start backend, then launch UI in Kiosk mode
-            cd /root/os && node server.js &
-            sleep 2
-            exec chromium --kiosk --no-sandbox --autoplay-policy=no-user-gesture-required http://localhost:3000
-            EOF
-
-            # 6. Auto-login Configuration
-            mkdir -p airootfs/etc/systemd/system/getty@tty1.service.d/
-            cat <<EOF > airootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf
-            [Service]
-            ExecStart=
-            ExecStart=-/sbin/agetty --autologin root --noclear %I \\\$TERM
-            EOF
-
-            # 7. Start X at login
-            echo '[[ -z \$DISPLAY && \$XDG_VTNR -eq 1 ]] && exec startx' >> airootfs/root/.bash_profile
-
-            # 8. Final Polish: Kernel Parameters for "Silent Boot"
-            # This hides all the 'loading' text so it feels like a real consumer OS
-            mkdir -p airootfs/etc/default/
-            echo 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 rd.udev.log_priority=3 vt.global_cursor_default=0"' >> airootfs/etc/default/grub
-
-            # 9. Build the ISO
-            mkarchiso -v -w /tmp/archiso-tmp -o /workspace/output .
-          "
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: output/*.iso
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          docker run --privileged --rm -v $(pwd):/workspace -w /workspace ${{ matrix.image }} ./build_iso.sh
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
