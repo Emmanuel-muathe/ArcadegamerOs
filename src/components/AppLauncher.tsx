@@ -40,17 +40,10 @@ export function AppLauncher({ isOpen, onClose }: { isOpen: boolean; onClose: () 
       onClose();
       return;
     }
-    
-    try {
-      await fetch('/api/system/apps/launch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ exec: app.exec })
-      });
-      onClose();
-    } catch (e) {
-      console.error("Failed to launch app", e);
-    }
+
+    const payload = btoa(JSON.stringify({ name: app.name, exec: app.exec }));
+    openWindow(`external:${app.name}`, app.name, `external:${payload}`);
+    onClose();
   };
 
   const addToDesktop = async (e: React.MouseEvent, app: any) => {
