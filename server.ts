@@ -387,7 +387,6 @@ async function startServer() {
       res.status(500).json({ error: e.message });
     }
   });
-
   // --- SETTINGS: POWER ---
   app.get("/api/system/power", async (req, res) => {
     try {

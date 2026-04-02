@@ -132,7 +132,6 @@ export function QuickSettings({ isOpen, onClose, position }: { isOpen: boolean, 
     }
     setBtActionBusy(null);
   };
-
   if (!isOpen) return null;
 
   const renderCalendar = () => {
