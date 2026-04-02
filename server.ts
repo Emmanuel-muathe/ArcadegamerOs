@@ -5,8 +5,45 @@ import fs from "fs";
 import os from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { constants as fsConstants } from "fs";
 
 const execAsync = promisify(exec);
+
+const safePackageName = (value: string) => /^[a-zA-Z0-9@._+:-]+$/.test(value);
+const safeCommandName = (value: string) => /^[/a-zA-Z0-9._+-]+$/.test(value);
+
+const commandExists = async (command: string) => {
+  if (!safeCommandName(command)) return false;
+  if (command.includes('/')) {
+    try {
+      await fs.promises.access(command, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  const pathEnv = process.env.PATH || '';
+  for (const dir of pathEnv.split(':').filter(Boolean)) {
+    const fullPath = path.join(dir, command);
+    try {
+      await fs.promises.access(fullPath, fsConstants.X_OK);
+      return true;
+    } catch {
+      // Continue searching PATH.
+    }
+  }
+  return false;
+};
+
+const getWifiDevice = async () => {
+  const { stdout } = await execAsync("nmcli -t -f DEVICE,TYPE,STATE dev");
+  const wifiLine = stdout.split('\n').find(line => {
+    const [_, type] = line.split(':');
+    return type === 'wifi';
+  });
+  return wifiLine ? wifiLine.split(':')[0] : null;
+};
 
 async function startServer() {
   const app = express();
@@ -32,13 +69,35 @@ async function startServer() {
   // --- WI-FI ---
   app.get("/api/system/wifi", async (req, res) => {
     try {
-      const { stdout } = await execAsync("nmcli -t -f SSID,SIGNAL,SECURITY dev wifi");
+      let enabled = true;
+      try {
+        const radio = await execAsync("nmcli radio wifi");
+        enabled = radio.stdout.trim().toLowerCase() === "enabled";
+      } catch (e) {
+        // Keep enabled=true if status command is unavailable
+      }
+
+      if (!enabled) {
+        return res.json({ enabled: false, networks: [] });
+      }
+
+      const { stdout } = await execAsync("nmcli -t -f ACTIVE,SSID,SIGNAL,SECURITY dev wifi");
       const networks = stdout.split("\n").filter(l => l.trim() !== "").map(line => {
-        const [ssid, signal, security] = line.split(":");
-        return { ssid, signal: parseInt(signal, 10), security };
+        const [active, ssid, signal, security] = line.split(":");
+        return { ssid, signal: parseInt(signal, 10), security, connected: active === 'yes' };
       }).filter(n => n.ssid && n.ssid !== "--").reduce((acc, curr) => acc.find((i: any) => i.ssid === curr.ssid) ? acc : [...acc, curr], [] as any[]);
-      res.json({ networks });
+      res.json({ enabled: true, networks });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
+  });
+
+  app.post("/api/system/wifi/toggle", async (req, res) => {
+    try {
+      const enabled = !!req.body?.enabled;
+      await execAsync(`nmcli radio wifi ${enabled ? 'on' : 'off'}`);
+      res.json({ success: true, enabled });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.post("/api/system/wifi/connect", async (req, res) => {
@@ -48,6 +107,19 @@ async function startServer() {
       const { stdout } = await execAsync(cmd);
       res.json({ success: true, output: stdout });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
+  });
+
+  app.post("/api/system/wifi/disconnect", async (req, res) => {
+    try {
+      const device = await getWifiDevice();
+      if (!device) {
+        return res.status(404).json({ error: 'No Wi-Fi device found' });
+      }
+      await execAsync(`nmcli device disconnect ${device}`);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   // --- AUDIO (Pipewire/Wireplumber) ---
@@ -249,14 +321,70 @@ async function startServer() {
   // --- SETTINGS: BLUETOOTH ---
   app.get("/api/system/bluetooth", async (req, res) => {
     try {
+      const { stdout: showOut } = await execAsync("bluetoothctl show");
+      const enabled = /Powered:\s+yes/i.test(showOut);
+      if (!enabled) {
+        return res.json({ enabled: false, devices: [] });
+      }
+
       const { stdout } = await execAsync("bluetoothctl devices");
-      const devices = stdout.trim().split('\n').filter(Boolean).map(line => {
+      const basicDevices = stdout.trim().split('\n').filter(Boolean).map(line => {
         const parts = line.split(' ');
         return { mac: parts[1], name: parts.slice(2).join(' ') };
       });
+
+      const devices = await Promise.all(basicDevices.map(async (device) => {
+        try {
+          const { stdout: infoOut } = await execAsync(`bluetoothctl info ${device.mac}`);
+          return {
+            ...device,
+            paired: /Paired:\s+yes/i.test(infoOut),
+            trusted: /Trusted:\s+yes/i.test(infoOut),
+            connected: /Connected:\s+yes/i.test(infoOut),
+          };
+        } catch {
+          return { ...device, paired: false, trusted: false, connected: false };
+        }
+      }));
       res.json({ enabled: true, devices });
     } catch (e: any) {
       res.json({ enabled: false, devices: [], error: "Bluetooth service unavailable or bluetoothctl failed" });
+    }
+  });
+
+  app.post("/api/system/bluetooth/toggle", async (req, res) => {
+    try {
+      const enabled = !!req.body?.enabled;
+      await execAsync(`bluetoothctl power ${enabled ? 'on' : 'off'}`);
+      res.json({ success: true, enabled });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/system/bluetooth/connect", async (req, res) => {
+    try {
+      const mac = req.body?.mac;
+      if (!mac || !/^[0-9A-Fa-f:]{17}$/.test(mac)) {
+        return res.status(400).json({ error: 'Invalid Bluetooth MAC address' });
+      }
+      await execAsync(`bluetoothctl connect ${mac}`);
+      res.json({ success: true, mac });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/system/bluetooth/disconnect", async (req, res) => {
+    try {
+      const mac = req.body?.mac;
+      if (!mac || !/^[0-9A-Fa-f:]{17}$/.test(mac)) {
+        return res.status(400).json({ error: 'Invalid Bluetooth MAC address' });
+      }
+      await execAsync(`bluetoothctl disconnect ${mac}`);
+      res.json({ success: true, mac });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 
@@ -489,6 +617,24 @@ async function startServer() {
   app.post("/api/system/apps/launch", async (req, res) => {
     try {
       const { exec: cmd } = req.body;
+      if (!cmd || typeof cmd !== 'string') {
+        return res.status(400).json({ error: 'Missing app command' });
+      }
+
+      const baseCmd = cmd.trim().split(/\s+/)[0];
+      if (!baseCmd) {
+        return res.status(400).json({ error: 'Invalid app command' });
+      }
+
+      if (!safeCommandName(baseCmd)) {
+        return res.status(400).json({ error: 'Unsafe app command' });
+      }
+
+      const exists = await commandExists(baseCmd);
+      if (!exists) {
+        return res.status(404).json({ error: `Command not found: ${baseCmd}` });
+      }
+
       const child = require('child_process').spawn(cmd, [], { 
         shell: true, 
         detached: true, 
@@ -496,7 +642,7 @@ async function startServer() {
         env: { ...process.env, DISPLAY: process.env.DISPLAY || ':0' }
       });
       child.unref();
-      res.json({ success: true });
+      res.json({ success: true, launched: cmd });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
   });
 
@@ -504,6 +650,13 @@ async function startServer() {
   app.post("/api/system/terminal", async (req, res) => {
     try {
       const { command } = req.body;
+      const allowUnsafeTerminal = process.env.ENABLE_UNSAFE_TERMINAL === 'true';
+      if (!allowUnsafeTerminal) {
+        const safeCommands = ['help', 'date', 'uptime', 'whoami', 'pwd', 'ls'];
+        if (!safeCommands.includes(command)) {
+          return res.json({ output: `Command blocked in safe mode. Allowed: ${safeCommands.join(', ')}` });
+        }
+      }
       const { stdout, stderr } = await execAsync(command);
       res.json({ output: stdout || stderr });
     } catch (error: any) { 
@@ -564,6 +717,12 @@ async function startServer() {
           return res.json({ packages: [] });
         }
       }
+      if (typeof q !== 'string' || !q.trim()) {
+        return res.json({ packages: [] });
+      }
+      if (!safePackageName(q)) {
+        return res.status(400).json({ error: 'Invalid search query' });
+      }
       const { stdout } = await execAsync(`pacman -Ss ${q}`);
       const lines = stdout.split('\n');
       const packages = [];
@@ -581,6 +740,9 @@ async function startServer() {
   app.post("/api/system/packages/install", async (req, res) => {
     try {
       const { pkg } = req.body;
+      if (!pkg || typeof pkg !== 'string' || !safePackageName(pkg)) {
+        return res.status(400).json({ error: 'Invalid package name' });
+      }
       const { stdout } = await execAsync(`pkexec pacman -S --noconfirm ${pkg}`);
       res.json({ success: true, output: stdout });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
@@ -589,6 +751,9 @@ async function startServer() {
   app.post("/api/system/packages/uninstall", async (req, res) => {
     try {
       const { pkg } = req.body;
+      if (!pkg || typeof pkg !== 'string' || !safePackageName(pkg)) {
+        return res.status(400).json({ error: 'Invalid package name' });
+      }
       const { stdout } = await execAsync(`pkexec pacman -Rns --noconfirm ${pkg}`);
       res.json({ success: true, output: stdout });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
@@ -602,21 +767,6 @@ async function startServer() {
         return { name, version };
       });
       res.json({ packages });
-    } catch (error: any) { res.status(500).json({ error: error.message }); }
-  });
-
-  // --- BLUETOOTH ---
-  app.get("/api/system/bluetooth", async (req, res) => {
-    try {
-      // Mock bluetooth data since container might not have real bluetooth
-      res.json({
-        enabled: true,
-        devices: [
-          { name: "AirPods Pro", connected: true, battery: 85 },
-          { name: "Logitech MX Master 3", connected: true, battery: 40 },
-          { name: "Keychron K2", connected: false }
-        ]
-      });
     } catch (error: any) { res.status(500).json({ error: error.message }); }
   });
 

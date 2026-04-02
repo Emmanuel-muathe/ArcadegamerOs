@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type MouseEvent } from 'react';
 import { SystemTray } from './components/SystemTray';
 import { WindowManagerProvider, useWindowManager } from './contexts/WindowManagerContext';
 import { Window } from './components/Window';
@@ -11,6 +11,46 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { getAppIcon } from './utils/icons';
 import { X } from 'lucide-react';
 import { playSound } from './utils/sounds';
+
+function ExternalAppWindow({ payload }: { payload: string }) {
+  const [status, setStatus] = useState<'launching' | 'launched' | 'failed'>('launching');
+  const [message, setMessage] = useState('Launching app...');
+
+  useEffect(() => {
+    const launch = async () => {
+      try {
+        const parsed = JSON.parse(atob(payload));
+        setMessage(`Running: ${parsed.exec}`);
+        const res = await fetch('/api/system/apps/launch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ exec: parsed.exec })
+        });
+        const data = await res.json();
+        if (data.error) {
+          setStatus('failed');
+          setMessage(data.error);
+          return;
+        }
+        setStatus('launched');
+        setMessage(`Launched successfully: ${data.launched || parsed.exec}`);
+      } catch (e: any) {
+        setStatus('failed');
+        setMessage(e.message || 'Failed to launch app');
+      }
+    };
+
+    launch();
+  }, [payload]);
+
+  return (
+    <div className="h-full p-6 text-gray-200 bg-gray-950">
+      <h2 className="text-xl font-semibold mb-4">External App Launcher</h2>
+      <p className="text-sm text-gray-400 mb-2">Status: <span className={status === 'failed' ? 'text-red-400' : 'text-green-400'}>{status}</span></p>
+      <pre className="bg-black/40 border border-gray-800 rounded-lg p-3 text-sm whitespace-pre-wrap break-all">{message}</pre>
+    </div>
+  );
+}
 
 function Desktop() {
   const { windows, openWindow } = useWindowManager();
@@ -41,19 +81,12 @@ function Desktop() {
       openWindow(component, app.name, component);
       return;
     }
-    
-    try {
-      await fetch('/api/system/apps/launch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ exec: app.exec })
-      });
-    } catch (e) {
-      console.error("Failed to launch app", e);
-    }
+
+    const payload = btoa(JSON.stringify({ name: app.name, exec: app.exec }));
+    openWindow(`external:${app.name}`, app.name, `external:${payload}`);
   };
 
-  const removeFromDesktop = async (e: React.MouseEvent, appToRemove: any) => {
+  const removeFromDesktop = async (e: MouseEvent, appToRemove: any) => {
     e.stopPropagation();
     try {
       const newDesktopApps = pers.desktopApps.filter((app: any) => app.name !== appToRemove.name);
@@ -69,6 +102,10 @@ function Desktop() {
   };
 
   const renderComponent = (componentName: string) => {
+    if (componentName.startsWith('external:')) {
+      return <ExternalAppWindow payload={componentName.replace('external:', '')} />;
+    }
+
     switch (componentName) {
       case 'settings': return <Settings />;
       case 'appstore': return <AppStore />;
@@ -76,6 +113,21 @@ function Desktop() {
       case 'monitor': return <SystemMonitor />;
       case 'terminal': return <Terminal />;
       default: return <div className="p-4 text-white">Unknown App</div>;
+    }
+  };
+
+  const desktopAreaClasses = () => {
+    const base = 'relative z-10 w-full h-[calc(100vh-3.5rem)] md:h-screen p-4 overflow-hidden pointer-events-none';
+    switch (pers.dockPosition) {
+      case 'Left':
+        return `${base} md:w-[calc(100vw-4rem)] md:ml-16`;
+      case 'Right':
+        return `${base} md:w-[calc(100vw-4rem)] md:mr-16`;
+      case 'Top':
+        return `${base} pt-16 md:h-[calc(100vh-3.5rem)]`;
+      case 'Bottom':
+      default:
+        return base;
     }
   };
 
@@ -115,9 +167,9 @@ function Desktop() {
       </div>
 
       {/* Desktop Area (Where windows go) - Responsive padding for bottom/side dock */}
-      <div className="relative z-10 w-full h-[calc(100vh-3.5rem)] md:h-screen md:w-[calc(100vw-4rem)] md:ml-16 p-4 overflow-hidden pointer-events-none">
+      <div className={desktopAreaClasses()}>
         {windows.map(win => (
-          <Window key={win.id} window={win}>
+          <Window key={win.id} win={win}>
             {renderComponent(win.component)}
           </Window>
         ))}
