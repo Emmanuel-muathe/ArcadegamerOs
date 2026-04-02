@@ -43,6 +43,9 @@ jobs:
           echo "Building for Architecture: $ARCH"
 
           # 1. Host Tools (Fixed for the errors in your screenshot)
+          echo "Server = https://archive.archlinux.org/repos/
+          $repo/os/
+          $arch" > /etc/pacman.d/mirrorlist
           pacman -Syu --noconfirm archiso xorriso squashfs-tools grub mtools libisoburn mkinitcpio wget
 
           # 2. Setup Baseline Profile
@@ -93,7 +96,7 @@ jobs:
 
           # 6. Install pacapt (Universal wrapper for apt and pkg)
           mkdir -p airootfs/usr/local/bin
-          wget https://github.com/icy/pacapt/raw/medusa/pacapt -O airootfs/usr/local/bin/pacapt
+          wget https://raw.githubusercontent.com/icy/pacapt/master/pacapt -O airootfs/usr/local/bin/pacapt
           chmod +x airootfs/usr/local/bin/pacapt
           # Create symlinks so 'apt' and 'pkg' work natively
           ln -sf /usr/local/bin/pacapt airootfs/usr/local/bin/apt
@@ -137,3 +140,4 @@ jobs:
         with:
           name: Arcadegamer254Os-${{ matrix.arch }}-full
           path: output/*.iso
+          
