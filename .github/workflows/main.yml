@@ -34,15 +34,14 @@ jobs:
           cat << 'EOF' > build_iso.sh
           #!/bin/bash
           set -e
-          # 1. Install minimal build toolset
+          # 1. Install build tools
           pacman -Syu --noconfirm archiso xorriso squashfs-tools nodejs npm
 
-          # 2. Setup Baseline Profile (Smallest footprint)
+          # 2. Setup Baseline Profile
           cp -r /usr/share/archiso/configs/baseline/ ./iso_profile
           cd iso_profile
 
-          # 3. Define packages (Surgical precision)
-          # We use the 'packages.x86_64' name as required by archiso
+          # 3. Define packages
           cat << 'PKGS' > packages.x86_64
           linux
           grub
@@ -58,8 +57,16 @@ jobs:
           breeze-plymouth
           PKGS
 
-          # 4. Configure Plymouth Splash
-          sed -i 's/HOOKS=(base udev/HOOKS=(base udev plymouth/' airootfs/etc/mkinitcpio.conf
+          # 4. Configure Plymouth Splash (FIXED: Manual file creation)
+          mkdir -p airootfs/etc/
+          # Create a standard mkinitcpio config with Plymouth enabled
+          cat << 'MK' > airootfs/etc/mkinitcpio.conf
+          MODULES=()
+          BINARIES=()
+          FILES=()
+          HOOKS=(base udev plymouth autodetect modconf block filesystems keyboard fsck)
+          MK
+          
           mkdir -p airootfs/etc/plymouth/
           echo -e '[Daemon]\nTheme=breeze' > airootfs/etc/plymouth/plymouthd.conf
 
@@ -67,7 +74,6 @@ jobs:
           mkdir -p airootfs/root/os
           cp -r /workspace/dist /workspace/server.ts /workspace/package.json airootfs/root/os/
           
-          # Create Xinit config
           cat << 'XINIT' > airootfs/root/.xinitrc
           cd /root/os && node server.js &
           sleep 2
@@ -84,11 +90,11 @@ jobs:
 
           echo '[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx' >> airootfs/root/.bash_profile
 
-          # 7. Quiet Boot parameters
+          # 7. Quiet Boot parameters (FIXED: Handling baseline GRUB structure)
           mkdir -p airootfs/etc/default/
           echo 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=3 rd.udev.log_priority=3 vt.global_cursor_default=0"' > airootfs/etc/default/grub
 
-          # 8. Shrink the ISO (Cleanup)
+          # 8. Cleanup
           pacman -Scc --noconfirm
           rm -rf /var/cache/pacman/pkg/*
 
