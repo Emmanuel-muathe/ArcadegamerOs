@@ -20,77 +20,91 @@ jobs:
           npm install
           npm run build
 
-      - name: Create Build Script
+      - name: Generate OS ISO
         run: |
-          cat << 'EOF' > build_iso.sh
-          #!/bin/bash
+          # We run everything inside the Arch Linux container to ensure tool compatibility
+          docker run --privileged --rm -v $(pwd):/workspace -w /workspace archlinux:latest bash -c "
           set -e
           
-          echo "Building Arcadegamer254Os for Architecture: x86_64"
-
-          # 1. Host Tools & Keyring
-          echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          echo '--- Preparing Build Environment ---'
+          echo 'Server = https://geo.mirror.pkgbuild.com/\$repo/os/\$arch' > /etc/pacman.d/mirrorlist
           pacman -Sy --noconfirm archlinux-keyring
           pacman -Syu --noconfirm archiso xorriso squashfs-tools grub mtools libisoburn mkinitcpio wget
 
-          # 2. Setup Baseline Profile
+          # 1. Setup Baseline Profile
           cp -r /usr/share/archiso/configs/baseline/ ./iso_profile
           cd iso_profile
 
-          # 3. Configure profiledef.sh for compression
-          sed -i 's/compression="xz"/compression="xz" -Xbcj x86/g' profiledef.sh 
+          # 2. Sync Labels and Compression
+          # Setting a static label 'A254OS' prevents the 'empty root' mounting error
+          sed -i 's/iso_label=\".*\"/iso_label=\"A254OS\"/g' profiledef.sh
+          sed -i 's/compression=\"xz\"/compression=\"xz\" -Xbcj x86/g' profiledef.sh 
 
-          # 4. Define "Full Experience" Packages
+          # 3. Define Comprehensive Package List
           cat << PKGS > packages.x86_64
           base
           base-devel
           linux
           linux-firmware
+          intel-ucode
+          amd-ucode
           grub
           efibootmgr
           sudo
-          git
-          vim
-          htop
-          wget
-          curl
-          nodejs
-          npm
-          networkmanager
-          nm-connection-editor
+          pciutils
+          qemu-guest-agent
+          xf86-video-qxl
+          xf86-video-vmware
+          xf86-video-intel
+          xf86-video-amdgpu
+          xf86-video-nouveau
+          xf86-video-fbdev
+          mesa
           xorg-server
           xorg-xinit
-          xf86-video-fbdev
           openbox
+          plymouth
           chromium
           alsa-utils
-          plymouth
-          syslinux
+          nodejs
+          npm
+          git
+          vim
+          wget
+          curl
+          networkmanager
+          nm-connection-editor
           PKGS
 
-          # 5. Inject OS Code
+          # 4. Inject Virtualization-Aware mkinitcpio
+          # This ensures Vectras/QEMU storage drivers are loaded before the mount attempt
+          mkdir -p airootfs/etc/
+          cat << 'KMS' > airootfs/etc/mkinitcpio.conf
+          MODULES=(virtio virtio_blk virtio_pci virtio_net virtio_ring)
+          BINARIES=()
+          FILES=()
+          HOOKS=(base udev memdisk archiso_shutdown archiso archiso_loop_mnt archiso_pxe_common archiso_pxe_nbd archiso_pxe_http archiso_pxe_nfs archiso_kms block filesystems keyboard)
+          KMS
+
+          # 5. Inject OS Assets
           mkdir -p airootfs/root/os
           cp -r /workspace/dist /workspace/package.json airootfs/root/os/
           [ -f /workspace/server.js ] && cp /workspace/server.js airootfs/root/os/
 
-          # 6. Install pacapt (Universal wrapper for apt and pkg)
-          mkdir -p airootfs/usr/local/bin
-          wget https://raw.githubusercontent.com/icy/pacapt/master/pacapt -O airootfs/usr/local/bin/pacapt
-          chmod +x airootfs/usr/local/bin/pacapt
-          ln -sf /usr/local/bin/pacapt airootfs/usr/local/bin/apt
-          ln -sf /usr/local/bin/pacapt airootfs/usr/local/bin/pkg
-
-          # 7. System Configurations
+          # 6. System & Kiosk Configurations
           mkdir -p airootfs/etc/sudoers.d
-          echo "root ALL=(ALL) NOPASSWD: ALL" > airootfs/etc/sudoers.d/10-live-user
+          echo 'root ALL=(ALL) NOPASSWD: ALL' > airootfs/etc/sudoers.d/10-live-user
 
+          # Xinitrc: Auto-starts the Node server and Chromium Kiosk
           cat << 'XINIT' > airootfs/root/.xinitrc
           amixer sset Master unmute &
           nm-applet &
           cd /root/os && node server.js & 
-          exec chromium --kiosk --no-sandbox --autoplay-policy=no-user-gesture-required http://localhost:3000
+          sleep 5
+          exec chromium --kiosk --no-sandbox --autoplay-policy=no-user-gesture-required --check-for-update-interval=31536000 http://localhost:3000
           XINIT
 
+          # Network and Autologin setup
           mkdir -p airootfs/etc/systemd/system/multi-user.target.wants
           ln -sf /usr/lib/systemd/system/NetworkManager.service airootfs/etc/systemd/system/multi-user.target.wants/NetworkManager.service
           
@@ -98,19 +112,15 @@ jobs:
           cat << 'LOGIN' > airootfs/etc/systemd/system/getty@tty1.service.d/autologin.conf
           [Service]
           ExecStart=
-          ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+          ExecStart=-/sbin/agetty --autologin root --noclear %I \$TERM
           LOGIN
           
-          echo '[[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && exec startx' >> airootfs/root/.bash_profile
+          echo '[[ -z \$DISPLAY && \$XDG_VTNR -eq 1 ]] && exec startx' >> airootfs/root/.bash_profile
 
-          # 8. Build ISO
-          mkarchiso -v -w /tmp/archiso-tmp -o /workspace/output .
-          EOF
-          chmod +x build_iso.sh
-
-      - name: Generate OS ISO
-        run: |
-          docker run --privileged --rm -v $(pwd):/workspace -w /workspace archlinux:latest ./build_iso.sh
+          # 7. Final Build
+          # The -L flag MUST match the label in profiledef.sh (A254OS)
+          mkarchiso -v -L \"A254OS\" -w /tmp/archiso-tmp -o /workspace/output .
+          "
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
