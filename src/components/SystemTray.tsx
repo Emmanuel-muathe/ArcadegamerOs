@@ -10,6 +10,7 @@ export function SystemTray() {
   const [time, setTime] = useState(new Date());
   const [battery, setBattery] = useState<{ capacity: number; status: string; device: string } | null>(null);
   const [wifiNetworks, setWifiNetworks] = useState<any[]>([]);
+  const [wifiEnabled, setWifiEnabled] = useState(true);
   const [wifiError, setWifiError] = useState<string | null>(null);
   const [batteryError, setBatteryError] = useState<string | null>(null);
   const [isLauncherOpen, setIsLauncherOpen] = useState(false);
@@ -68,6 +69,7 @@ export function SystemTray() {
           setWifiError(data.error);
         } else {
           setWifiNetworks(data.networks || []);
+          setWifiEnabled(data.enabled !== false);
           setWifiError(null);
         }
       } catch (err) {
@@ -150,7 +152,7 @@ export function SystemTray() {
             className={`flex items-center justify-center hover:bg-white/10 p-2 rounded-xl transition-colors cursor-pointer ${isQuickSettingsOpen ? 'bg-white/10' : ''} ${isVertical ? 'flex-col space-y-2' : 'space-x-3'}`}
           >
             <div className={`flex items-center ${isVertical ? 'flex-col space-y-2' : 'space-x-2'}`}>
-              {wifiError ? <WifiOff className="w-4 h-4 text-gray-500" /> : <Wifi className="w-4 h-4" />}
+              {wifiError || !wifiEnabled ? <WifiOff className="w-4 h-4 text-gray-500" /> : <Wifi className="w-4 h-4" />}
               {renderBatteryIcon()}
             </div>
             <div className={`flex flex-col ${isVertical ? 'items-center' : 'items-end'}`}>
